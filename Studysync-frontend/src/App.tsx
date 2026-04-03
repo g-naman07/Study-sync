@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import useCameraProcessor from './hooks/useCameraProcessor';
 import SpeechDetector from './components/SpeechDetector';
 import BlurDetection from './components/BlurDetection';
 import FaceDetectors from './components/FaceDetectors';
 import YouTubePlayer from './components/YouTubePlayer';
-import { Shield, Camera, Mic, AlertTriangle, Users, ExternalLink, PauseCircle, Play } from 'lucide-react';
+import SessionStats from './components/SessionStats';
+import { Shield, Camera, Mic, AlertTriangle, Users, ExternalLink, PauseCircle, Play, StopCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { io } from 'socket.io-client';
@@ -33,6 +34,12 @@ const App: React.FC = () => {
   const [isNetworkPaused, setIsNetworkPaused] = useState(false);
   const [isTabDistracted, setIsTabDistracted] = useState(false); 
   const [isManualBreak, setIsManualBreak] = useState(false);
+
+  // --- LOGGING & STATS ---
+  const [sessionLogs, setSessionLogs] = useState<{type: string, time: number, status: 'distracted' | 'focused'}[]>([]);
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
+  const [sessionEndTime, setSessionEndTime] = useState<number | null>(null);
+  const [showStats, setShowStats] = useState(false);
   
   const { modelReady, faces, stream, internalVideoRef } = useCameraProcessor(3);
 
@@ -41,6 +48,13 @@ const App: React.FC = () => {
       el.srcObject = stream;
     }
   };
+
+  const handleSpeechStatus = useCallback((status: string, vol?: number) => {
+    setIsSpeaking(status);
+    if (vol !== undefined) {
+      setVolume(vol);
+    }
+  }, []);
 
   // --- INDEPENDENT TAB SWITCHING CONTROLLER ---
   useEffect(() => {
@@ -116,10 +130,51 @@ const App: React.FC = () => {
     }
   };
 
+  // --- LOGGING LOGIC ---
+  useEffect(() => {
+    if (!sessionStarted || isManualBreak || isGracePeriod || showStats) return;
+
+    const isCurrentlyDistracted = !isFocused || isBlur === "Yes" || faces.length !== 1 || isSpeaking === "Yes" || isTabDistracted || isNetworkPaused;
+    
+    // We only log if state changes
+    const lastLog = sessionLogs[sessionLogs.length - 1];
+    const currentStatus = isCurrentlyDistracted ? 'distracted' : 'focused';
+    
+    if (!lastLog || lastLog.status !== currentStatus) {
+      let type = "Focus Maintained";
+      if (isCurrentlyDistracted) {
+        if (!isFocused) type = "Looking Away";
+        else if (faces.length !== 1) type = "Face Not Detected";
+        else if (isBlur === "Yes") type = "Camera Obscured";
+        else if (isSpeaking === "Yes") type = "Talking Detected";
+        else if (isTabDistracted) type = "Tab Switched";
+        else if (isNetworkPaused) type = "Group Delay";
+      }
+
+      setSessionLogs(prev => [...prev, {
+        type,
+        time: Date.now(),
+        status: currentStatus
+      }]);
+    }
+  }, [isFocused, isBlur, faces.length, isSpeaking, sessionStarted, isGracePeriod, isNetworkPaused, isTabDistracted, isManualBreak, showStats]);
+
   const startMonitoring = () => {
     setSessionStarted(true);
+    setSessionStartTime(Date.now());
+    setSessionLogs([{
+        type: 'Session Started',
+        time: Date.now(),
+        status: 'focused'
+    }]);
     setIsGracePeriod(true);
     setTimeout(() => setIsGracePeriod(false), 3000); 
+  };
+
+  const endSession = () => {
+    setSessionEndTime(Date.now());
+    setSessionStarted(false);
+    setShowStats(true);
   };
 
   const handleCreateRoom = () => {
@@ -138,6 +193,13 @@ const App: React.FC = () => {
 
   // Calculate if background AI sensors should be actively running to save CPU
   const isSensorsActive = sessionStarted && !isManualBreak && !isTabDistracted && !isNetworkPaused;
+  const previewBounds = {
+    left: 0,
+    right: Math.max(0, window.innerWidth - 240),
+    top: 0,
+    bottom: Math.max(0, window.innerHeight - 180),
+  };
+  const previewStartX = Math.max(0, window.innerWidth - 260);
 
   // Compute if the AI warning should be shown (Looking away, but not on a break)
   const showAiWarning = sessionStarted && !isPlaying && !isManualBreak && !isTabDistracted && !isNetworkPaused && !isGracePeriod;
@@ -153,6 +215,12 @@ const App: React.FC = () => {
           </div>
         </div>
         <div className="status-badge" style={{ display: 'flex', gap: '1rem' }}>
+          {sessionStarted && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#22c55e', fontSize: '0.875rem', fontWeight: 600 }}>
+               <div className="pulse-dot" style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }}></div>
+               LIVE SESSION
+            </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem' }}>
              <Camera size={16} color={modelReady ? '#22c55e' : '#ef4444'} />
              <span>Camera {modelReady ? 'Online' : 'Initializing...'}</span>
@@ -160,6 +228,26 @@ const App: React.FC = () => {
         </div>
       </header>
 
+      {showStats ? (
+          <SessionStats 
+            logs={sessionLogs} 
+            startTime={sessionStartTime || 0} 
+            endTime={sessionEndTime || Date.now()} 
+            onReset={() => {
+                setShowStats(false);
+                setSessionStarted(false);
+                setVideoId(null);
+                setSessionLogs([]);
+                setSessionStartTime(null);
+                setSessionEndTime(null);
+                setIsManualBreak(false);
+                setIsNetworkPaused(false);
+                setIsTabDistracted(false);
+                setIsGracePeriod(false);
+            }}
+          />
+      ) : (
+      <>
       <main className="video-section">
         {!videoId ? (
           <div className="setup-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '2rem' }}>
@@ -365,6 +453,28 @@ const App: React.FC = () => {
                 {isManualBreak ? 'Resume AI' : 'Take Break'}
               </button>
             </div>
+            <button 
+              onClick={endSession}
+              style={{ 
+                width: '100%',
+                marginTop: '1rem',
+                padding: '0.75rem', 
+                borderRadius: '8px', 
+                background: 'rgba(239, 68, 68, 0.1)', 
+                color: '#ef4444', 
+                border: '1px solid rgba(239, 68, 68, 0.2)', 
+                fontWeight: 600, 
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              <StopCircle size={16} />
+              End Session & View Stats
+            </button>
           </div>
         )}
 
@@ -446,10 +556,7 @@ const App: React.FC = () => {
       {/* Hidden/Background Sensors */}
       <SpeechDetector 
         isActive={isSensorsActive}
-        setIsSpeaking={(status, vol) => {
-          setIsSpeaking(status);
-          if (vol !== undefined) setVolume(vol);
-        }} 
+        setIsSpeaking={handleSpeechStatus}
       />
       
       <BlurDetection 
@@ -466,8 +573,8 @@ const App: React.FC = () => {
 
       <motion.div
         drag
-        dragConstraints={{ left: 0, right: window.innerWidth - 240, top: 0, bottom: window.innerHeight - 180 }}
-        initial={{ x: window.innerWidth - 260, y: 100 }}
+        dragConstraints={previewBounds}
+        initial={{ x: previewStartX, y: 100 }}
         className="floating-preview"
         style={{
           position: 'fixed',
@@ -507,6 +614,8 @@ const App: React.FC = () => {
           </div>
         </div>
       </motion.div>
+      </>
+      )}
     </div>
   );
 };

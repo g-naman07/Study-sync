@@ -3,11 +3,12 @@ import { AudioClassifier, FilesetResolver } from "@mediapipe/tasks-audio";
 import { SpeechDetectorProps } from "../types/ai.types";
 import { registerStream, unRegisterStream } from "../lib/MediaRegistry";
 
-const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
+const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking, isActive }) => {
     const classifierRef = useRef<AudioClassifier | null>(null);
     const audioCtxRef = useRef<AudioContext | null>(null);
     const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+    const workletUrlRef = useRef<string | null>(null);
     const speechStreakRef = useRef(0);
     const silenceStreakRef = useRef(0);
     const speakingStateRef = useRef(false);
@@ -18,6 +19,11 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
     useEffect(() => {
         const loadModel = async () => {
             try {
+                if (classifierRef.current) {
+                    await startMicrophone();
+                    return;
+                }
+
                 const filesetResolver = await FilesetResolver.forAudioTasks(
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.0/wasm"
                 );
@@ -32,15 +38,22 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
             }
         };
 
-        loadModel();
+        if (isActive) {
+           loadModel();
+        } else {
+            stopMicrophone();
+            setIsSpeaking("No", 0);
+        }
 
         return () => {
             stopMicrophone();
             unRegisterStream("SpeechDetector-audio-stream");
         };
-    }, []);
+    }, [isActive, setIsSpeaking]);
 
     const startMicrophone = async () => {
+        if (audioCtxRef.current) return;
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             registerStream("SpeechDetector-audio-stream", stream);
@@ -82,6 +95,7 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
 
             const blob = new Blob([workletCode], { type: 'application/javascript' });
             const workletUrl = URL.createObjectURL(blob);
+            workletUrlRef.current = workletUrl;
             
             await audioCtxRef.current.audioWorklet.addModule(workletUrl);
             
@@ -89,7 +103,7 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
             workletNodeRef.current = new AudioWorkletNode(audioCtxRef.current, "audio-processor");
 
             workletNodeRef.current.port.onmessage = (event) => {
-                if (!classifierRef.current) return;
+                if (!classifierRef.current || !isActive) return;
 
                 // REMOVED THE THROTTLE! The worklet now naturally throttles itself to ~256ms
                 const audioData = event.data.audioData;
@@ -111,7 +125,7 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
         }
     };
     const processAudio = (audioData: Float32Array, volume: number) => {
-        if (!classifierRef.current) return;
+        if (!classifierRef.current || !isActive) return;
 
         try {
             const results = classifierRef.current.classify(audioData, 16000);
@@ -176,6 +190,14 @@ const SpeechDetector: React.FC<SpeechDetectorProps> = ({ setIsSpeaking }) => {
             audioCtxRef.current.close();
             audioCtxRef.current = null;
         }
+        if (workletUrlRef.current) {
+            URL.revokeObjectURL(workletUrlRef.current);
+            workletUrlRef.current = null;
+        }
+        speechStreakRef.current = 0;
+        silenceStreakRef.current = 0;
+        speakingStateRef.current = false;
+        noiseFloorRef.current = 0;
     };
 
     return null;

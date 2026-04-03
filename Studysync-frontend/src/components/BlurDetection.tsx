@@ -1,12 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { BlurDetectionProps } from "../types/ai.types";
 
-// Add the isActive prop to your interface
-interface ExtendedBlurProps extends BlurDetectionProps {
-    isActive: boolean;
-}
-
-const BlurDetection: React.FC<ExtendedBlurProps> = ({ videoRef, setIsBlur, isActive }) => {
+const BlurDetection: React.FC<BlurDetectionProps> = ({ videoRef, setIsBlur, isActive }) => {
     const workerRef = useRef<Worker | null>(null);
 
     // 1. Worker Setup

@@ -38,11 +38,17 @@ const isLookingAway = (face: Face): boolean => {
     return false;
 };
 
-const FaceDetectors: React.FC<FaceDetectorsProps> = ({ setIsFocused, faces }) => {
+const FaceDetectors: React.FC<FaceDetectorsProps> = ({ setIsFocused, faces, isActive }) => {
     const awayFramesRef = useRef(0);
     const focusedFramesRef = useRef(0);
 
     useEffect(() => {
+        if (!isActive) {
+            awayFramesRef.current = 0;
+            focusedFramesRef.current = 0;
+            return;
+        }
+
         if (faces.length === 0) {
             awayFramesRef.current = 0;
             focusedFramesRef.current = 0;
@@ -69,7 +75,7 @@ const FaceDetectors: React.FC<FaceDetectorsProps> = ({ setIsFocused, faces }) =>
             }
         }
         
-    }, [faces, setIsFocused]);
+    }, [faces, isActive, setIsFocused]);
 
     return null;
 };

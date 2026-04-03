@@ -167,3 +167,24 @@ h1, h2, h3 {
   text-align: center;
   padding: 2rem;
 }
+.pulse-dot {
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+.stats-container {
+  grid-column: 1 / -1;
+  background: var(--bg-secondary);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
+  max-height: calc(100vh - 100px);
+}
+
+.stats-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.stats-container::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 4px;
+}
