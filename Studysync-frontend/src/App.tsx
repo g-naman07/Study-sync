@@ -9,7 +9,11 @@ import { Shield, Camera, Mic, AlertTriangle, Users, ExternalLink, PauseCircle, P
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { io } from 'socket.io-client';
-const socket = io('http://localhost:4444');
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4444';
+const socket = io(SOCKET_URL, {
+  autoConnect: true,
+  reconnection: true,
+});
 
 const getYouTubeId = (url: string) => {
   const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
@@ -31,6 +35,9 @@ const App: React.FC = () => {
   // Network & Local Penalty States
   const [roomId, setRoomId] = useState<string | null>(null);
   const [joinInput, setJoinInput] = useState("");
+  const [isSocketConnected, setIsSocketConnected] = useState(socket.connected);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [roomError, setRoomError] = useState('');
   const [isNetworkPaused, setIsNetworkPaused] = useState(false);
   const [isTabDistracted, setIsTabDistracted] = useState(false); 
   const [isManualBreak, setIsManualBreak] = useState(false);
@@ -56,6 +63,75 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const connectToRoom = useCallback((nextRoomId: string) => {
+    const normalizedRoomId = nextRoomId.trim();
+    if (!normalizedRoomId) {
+      setRoomError('Enter a valid room code.');
+      return;
+    }
+
+    if (!socket.connected) {
+      setRoomError(`Socket server is not connected at ${SOCKET_URL}.`);
+      return;
+    }
+
+    setIsJoiningRoom(true);
+    setRoomError('');
+
+    if (roomId && roomId !== normalizedRoomId) {
+      socket.emit('leave-room', roomId);
+    }
+
+    socket.emit(
+      'join-room',
+      normalizedRoomId,
+      (response: { success: boolean; roomId?: string; videoId?: string | null; error?: string }) => {
+        setIsJoiningRoom(false);
+
+        if (!response?.success || !response.roomId) {
+          setRoomError(response?.error || 'Unable to join the room.');
+          return;
+        }
+
+        setRoomId(response.roomId);
+        setJoinInput('');
+
+        if (response.videoId) {
+          setVideoId(response.videoId);
+          setYtLink(`https://www.youtube.com/watch?v=${response.videoId}`);
+        } else if (videoId) {
+          socket.emit('set-video', { roomId: response.roomId, videoId });
+        }
+      }
+    );
+  }, [roomId, videoId]);
+
+  useEffect(() => {
+    const handleConnect = () => {
+      setIsSocketConnected(true);
+      setRoomError('');
+    };
+
+    const handleDisconnect = () => {
+      setIsSocketConnected(false);
+    };
+
+    const handleConnectError = () => {
+      setIsSocketConnected(false);
+      setRoomError(`Unable to connect to socket server at ${SOCKET_URL}.`);
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('connect_error', handleConnectError);
+    };
+  }, []);
+
   // --- INDEPENDENT TAB SWITCHING CONTROLLER ---
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -77,10 +153,6 @@ const App: React.FC = () => {
 
   // --- MASTER NETWORK CONTROLLER ---
   useEffect(() => {
-    if (!roomId) return;
-
-    socket.emit('join-room', roomId);
-
     const handleSyncVideo = (newVideoId: string) => {
         console.log(`[Study Sync] Video synced from room: ${newVideoId}`);
         setVideoId(newVideoId);
@@ -99,7 +171,7 @@ const App: React.FC = () => {
         socket.off('sync-video', handleSyncVideo);
         socket.off('pause-session', handlePauseSession);
     };
-  }, [roomId]);
+  }, []);
 
   // --- FLUID AUTO-RESUME LOGIC ---
   useEffect(() => {
@@ -179,16 +251,11 @@ const App: React.FC = () => {
 
   const handleCreateRoom = () => {
     const newCode = "sync-" + Math.random().toString(36).substring(2, 8);
-    setRoomId(newCode);
-    if (videoId) {
-        socket.emit('set-video', { roomId: newCode, videoId });
-    }
+    connectToRoom(newCode);
   };
 
   const handleJoinRoom = () => {
-    if (joinInput.trim()) {
-        setRoomId(joinInput.trim());
-    }
+    connectToRoom(joinInput);
   };
 
   // Calculate if background AI sensors should be actively running to save CPU
@@ -482,14 +549,23 @@ const App: React.FC = () => {
           <h3 style={{ marginBottom: '1rem', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Users size={16} /> Group Sync
           </h3>
+          <p style={{ fontSize: '0.75rem', color: isSocketConnected ? '#22c55e' : '#ef4444', marginTop: 0, marginBottom: '0.75rem' }}>
+            {isSocketConnected ? 'Socket connected' : 'Socket disconnected'}
+          </p>
+          {roomError && (
+            <div style={{ marginBottom: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#fca5a5', fontSize: '0.75rem' }}>
+              {roomError}
+            </div>
+          )}
           
           {!roomId ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <button 
                   onClick={handleCreateRoom}
+                  disabled={!isSocketConnected || isJoiningRoom}
                   style={{ width: '100%', padding: '0.5rem', borderRadius: '6px', background: 'var(--accent-color)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.875rem' }}
               >
-                  Create Room
+                  {isJoiningRoom ? 'Connecting...' : 'Create Room'}
               </button>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <input 
@@ -501,9 +577,10 @@ const App: React.FC = () => {
                   />
                   <button 
                       onClick={handleJoinRoom}
+                      disabled={!isSocketConnected || isJoiningRoom}
                       style={{ padding: '0.5rem 1rem', borderRadius: '6px', background: '#22c55e', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.875rem' }}
                   >
-                      Join
+                      {isJoiningRoom ? 'Joining...' : 'Join'}
                   </button>
               </div>
             </div>
@@ -512,7 +589,10 @@ const App: React.FC = () => {
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Connected to Room</p>
                 <p style={{ fontFamily: 'monospace', fontSize: '1.25rem', color: '#22c55e', margin: '0.5rem 0', fontWeight: 'bold' }}>{roomId}</p>
                 <button 
-                    onClick={() => setRoomId(null)}
+                    onClick={() => {
+                      socket.emit('leave-room', roomId);
+                      setRoomId(null);
+                    }}
                     style={{ fontSize: '0.75rem', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
                 >
                     Disconnect

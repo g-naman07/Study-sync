@@ -12,14 +12,40 @@ const { YoutubeTranscript } = require('youtube-transcript');
 
 dotenv.config();
 
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+const isOriginAllowed = (origin?: string) => {
+    if (!origin) return true;
+    if (allowedOrigins.length === 0) return true;
+    return allowedOrigins.includes(origin);
+};
+
 const app = express();
 app.use(cors({
-    origin: '*',
+    origin: (origin, callback) => {
+        if (isOriginAllowed(origin)) {
+            callback(null, true);
+            return;
+        }
+        callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type']
+    allowedHeaders: ['Content-Type'],
+    credentials: true,
 }));
 
 app.use(express.json());
+app.get('/health', (_req: Request, res: Response) => {
+    res.json({
+        status: 'ok',
+        socket: 'ready',
+        notes: genAI ? 'enabled' : 'disabled',
+        timestamp: new Date().toISOString(),
+    });
+});
 
 // ==========================================
 // 1. SOCKET.IO SETUP (Study Sync Rooms)
@@ -27,8 +53,15 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", 
-        methods: ["GET", "POST"]
+        origin: (origin, callback) => {
+            if (isOriginAllowed(origin)) {
+                callback(null, true);
+                return;
+            }
+            callback(new Error(`Socket.IO CORS blocked for origin: ${origin}`));
+        },
+        methods: ["GET", "POST"],
+        credentials: true,
     }
 });
 
@@ -39,14 +72,35 @@ io.on('connection', (socket) => {
     console.log(`[+] User connected: ${socket.id}`);
 
     // Join a study room
-    socket.on('join-room', (roomId: string) => {
-        socket.join(roomId);
-        console.log(`User ${socket.id} joined room: ${roomId}`);
+    socket.on('join-room', (roomId: string, callback?: (response: { success: boolean; roomId?: string; videoId?: string | null; error?: string }) => void) => {
+        const normalizedRoomId = roomId.trim();
+        if (!normalizedRoomId) {
+            callback?.({ success: false, error: 'Room code is required.' });
+            return;
+        }
+
+        socket.join(normalizedRoomId);
+        socket.data.roomId = normalizedRoomId;
+        const currentVideoId = roomVideos.get(normalizedRoomId) ?? null;
+
+        callback?.({ success: true, roomId: normalizedRoomId, videoId: currentVideoId });
+        console.log(`User ${socket.id} joined room: ${normalizedRoomId}`);
         
         // NEW: If a video is already playing in this room, send it to the new user!
-        if (roomVideos.has(roomId)) {
-            socket.emit('sync-video', roomVideos.get(roomId));
+        if (currentVideoId) {
+            socket.emit('sync-video', currentVideoId);
         }
+    });
+
+    socket.on('leave-room', (roomId: string) => {
+        const normalizedRoomId = roomId.trim();
+        if (!normalizedRoomId) return;
+
+        socket.leave(normalizedRoomId);
+        if (socket.data.roomId === normalizedRoomId) {
+            delete socket.data.roomId;
+        }
+        console.log(`User ${socket.id} left room: ${normalizedRoomId}`);
     });
 
     // NEW: Listen for when a user confirms a video link
@@ -77,11 +131,7 @@ io.on('connection', (socket) => {
 // 2. GEMINI API SETUP (Note Generation)
 // ==========================================
 const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) {
-    console.error("CRITICAL: GEMINI_API_KEY is missing from .env");
-    process.exit(1);
-}
-const genAI = new GoogleGenerativeAI(apiKey);
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
 interface GenerateNotesRequest {
     videoUrl: string;
@@ -92,6 +142,14 @@ app.post('/api/generate-notes', async (req: Request<{}, {}, GenerateNotesRequest
 
     if (!videoUrl) {
         res.status(400).json({ success: false, error: "No video URL provided." });
+        return;
+    }
+
+    if (!genAI) {
+        res.status(500).json({
+            success: false,
+            error: "GEMINI_API_KEY is missing on the backend. Room sync can still work, but note generation is disabled."
+        });
         return;
     }
 

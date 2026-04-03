@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4444";
+
 interface YouTubePlayerProps {
     videoId?: string;
     playlistId?: string;
@@ -284,7 +286,7 @@ const YouTubePlayer: React.FC<YouTubePlayerProps> = ({ videoId, playlistId, isPl
         setNotes("");
 
         try {
-            const response = await fetch('http://localhost:4444/api/generate-notes', {
+            const response = await fetch(`${API_URL}/api/generate-notes`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ videoUrl: `https://www.youtube.com/watch?v=${videoId}` })
@@ -297,7 +299,7 @@ const YouTubePlayer: React.FC<YouTubePlayerProps> = ({ videoId, playlistId, isPl
             }
         } catch (error) {
             console.error("Network error:", error);
-            setErrorMsg("Failed to connect to the backend server. Is it running?");
+            setErrorMsg(`Failed to connect to the backend server at ${API_URL}.`);
         } finally {
             setIsGenerating(false);
         }
